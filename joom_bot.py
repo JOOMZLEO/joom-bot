@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 import logging
 from telegram import Update
@@ -8,24 +9,18 @@ import os
 import requests
 import stripe
 import datetime
-import asyncio
+import threading
 
-# Load environment variables
+# Load environment variables from the specified .env file
 load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
 
-# Environment variables
+# Your bot token and API details from the .env file
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TOYYIBPAY_API_KEY = os.getenv("TOYYIBPAY_API_KEY")
 TOYYIBPAY_CATEGORY_CODE = os.getenv("TOYYIBPAY_CATEGORY_CODE")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
-TOYYIBPAY_BASE_URL = "https://toyyibpay.com"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-
-# Debug: Log whether the bot token is loaded
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not loaded from .env file. Check the .env file path and ensure it contains the token.")
-else:
-    print(f"Loaded BOT_TOKEN: {BOT_TOKEN}")
+TOYYIBPAY_BASE_URL = "https://toyyibpay.com"  # Base URL for ToyyibPay API
 
 # Initialize Stripe
 stripe.api_key = STRIPE_API_KEY
@@ -36,23 +31,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Flask app for webhook handling
+# Flask app for handling webhooks
 app = Flask(__name__)
 
-@app.route("/webhook", methods=["POST"])
-def telegram_webhook():
-    """Handle incoming updates from Telegram."""
-    if request.method == "POST":
-        update_data = request.get_json()
-        logger.info(f"Received update: {update_data}")
-        application.process_update(Update.de_json(update_data, application.bot))
-        return "OK", 200
-    return "Invalid request method", 400
+@app.route('/success', methods=['GET', 'POST'])
+def success_callback():
+    data = request.get_json() if request.is_json else request.form.to_dict()
+    logger.info(f"Received success callback: {data}")
+    return "Success callback received", 200
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint."""
-    return "OK", 200
+@app.route('/callback', methods=['GET', 'POST'])
+def payment_callback():
+    if request.method == 'POST':
+        data = request.get_json() if request.is_json else request.form.to_dict()
+        logger.info(f"Received payment callback: {data}")
+        # Add logic to validate and process the payment
+        return "Payment callback received", 200
+    return "Callback endpoint is running", 200
 
 async def start(update: Update, context):
     logger.info(f"Received /start command from {update.effective_user.username}")
@@ -61,7 +56,7 @@ async def start(update: Update, context):
 async def subscribe(update, context):
     user = update.message.from_user
 
-    # Generate ToyyibPay Payment Link
+    # Step 1: Generate ToyyibPay Payment Link
     toyibpay_link = None
     payment_details = {
         "userSecretKey": TOYYIBPAY_API_KEY,
@@ -70,7 +65,7 @@ async def subscribe(update, context):
         "billDescription": "Subscription for Telegram Group Access",
         "billPriceSetting": 1,
         "billPayorInfo": 1,
-        "billAmount": "200",
+        "billAmount": "200",  # Amount in cents (e.g., RM2.00)
         "billReturnUrl": os.getenv("SUCCESS_URL"),
         "billCallbackUrl": os.getenv("CALLBACK_URL"),
         "billExternalReferenceNo": f"user_{user.id}_{datetime.datetime.now().timestamp()}",
@@ -80,6 +75,7 @@ async def subscribe(update, context):
     }
 
     response = requests.post(f"{TOYYIBPAY_BASE_URL}/index.php/api/createBill", data=payment_details)
+
     if response.status_code == 200:
         try:
             payment_data = response.json()
@@ -91,7 +87,7 @@ async def subscribe(update, context):
         except Exception as e:
             logger.error(f"Error parsing ToyyibPay response: {e}")
 
-    # Generate Stripe Payment Link
+    # Step 2: Generate Stripe Payment Link
     stripe_link = None
     try:
         session = stripe.checkout.Session.create(
@@ -101,7 +97,7 @@ async def subscribe(update, context):
                     "price_data": {
                         "currency": "myr",
                         "product_data": {"name": "Group Subscription"},
-                        "unit_amount": 200,
+                        "unit_amount": 200,  # Amount in cents (e.g., RM2.00)
                     },
                     "quantity": 1,
                 }
@@ -114,43 +110,78 @@ async def subscribe(update, context):
     except stripe.error.StripeError as e:
         logger.error(f"Stripe error: {e}")
 
-    # Reply with Payment Links
+    # Step 3: Reply with Both Payment Links
     if toyibpay_link or stripe_link:
         message = "Choose your payment method:\n\n"
         if toyibpay_link:
             message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
         if stripe_link:
             message += f"2. [Pay with Stripe]({stripe_link})\n"
+
         await update.message.reply_text(message, parse_mode="Markdown")
     else:
         await update.message.reply_text("Failed to generate payment links. Please try again later.")
 
+# Database setup
+def setup_database():
+    conn = sqlite3.connect("subscriptions.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            subscription_expiry DATE
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def add_user_to_db(user_id, username):
+    conn = sqlite3.connect("subscriptions.db")
+    cursor = conn.cursor()
+    expiry_date = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+    cursor.execute("REPLACE INTO users (user_id, username, subscription_expiry) VALUES (?, ?, ?)",
+                   (user_id, username, expiry_date))
+    conn.commit()
+    conn.close()
+
+def remove_expired_users(bot, group_id):
+    conn = sqlite3.connect("subscriptions.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, subscription_expiry FROM users")
+    rows = cursor.fetchall()
+
+    for user_id, expiry_date in rows:
+        if datetime.datetime.strptime(expiry_date, "%Y-%m-%d") < datetime.datetime.now():
+            bot.kick_chat_member(chat_id=group_id, user_id=user_id)
+            cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+# Check expired subscriptions every 24 hours
 def run_flask():
-    port = int(os.environ.get("PORT", 8000))  # Use Render's PORT or default to 8000
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False)
 
 async def main():
     # Initialize bot
     logger.info("Initializing bot...")
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+    setup_database()
 
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("subscribe", subscribe))
 
-    # Set webhook
-    logger.info("Setting webhook...")
+    logger.info("Handlers added. Setting webhook...")
     await application.bot.set_webhook(url=WEBHOOK_URL)
 
-    # Start Flask in an asyncio task
     logger.info("Starting Flask app...")
-    loop = asyncio.get_event_loop()
-    loop.create_task(asyncio.to_thread(run_flask))
+    threading.Thread(target=run_flask, daemon=True).start()
 
-    # Keep the bot running
+    logger.info("Running application...")
     await application.run_webhook(
         listen="0.0.0.0",
-        port=8000,
+        port=int(os.environ.get("PORT", 10000)),
         webhook_url=WEBHOOK_URL,
     )
 
