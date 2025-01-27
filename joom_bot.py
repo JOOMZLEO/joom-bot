@@ -114,7 +114,8 @@ async def subscribe(update, context):
         await update.message.reply_text("Failed to generate payment links. Please try again later.")
 
 def run_flask():
-    app.run(host="0.0.0.0", port=8000, debug=False)
+    port = int(os.environ.get("PORT", 8000))  # Use Render's PORT or default to 8000
+    app.run(host="0.0.0.0", port=port, debug=False)
 
 def main():
     # Initialize bot
