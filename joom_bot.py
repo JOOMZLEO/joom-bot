@@ -1,4 +1,3 @@
-import asyncio
 import sqlite3
 import logging
 from telegram import Update
@@ -6,7 +5,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 from flask import Flask, request
 from dotenv import load_dotenv
 import os
-import requests
 import stripe
 import datetime
 import threading
@@ -158,13 +156,11 @@ def remove_expired_users(bot, group_id):
     conn.commit()
     conn.close()
 
-# Check expired subscriptions every 24 hours
+# Run Flask and Telegram bot concurrently
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False)
 
-async def main():
-    # Initialize bot
-    logger.info("Initializing bot...")
+async def run_telegram():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     setup_database()
 
@@ -172,18 +168,19 @@ async def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("subscribe", subscribe))
 
-    logger.info("Handlers added. Setting webhook...")
+    # Set webhook
+    logger.info("Setting webhook...")
     await application.bot.set_webhook(url=WEBHOOK_URL)
 
-    logger.info("Starting Flask app...")
-    threading.Thread(target=run_flask, daemon=True).start()
+    logger.info("Running Telegram bot...")
+    await application.start()
+    await application.updater.start_polling()
+    await application.idle()
 
-    logger.info("Running application...")
-    await application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=WEBHOOK_URL,
-    )
+def main():
+    threading.Thread(target=run_flask, daemon=True).start()
+    asyncio.run(run_telegram())
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logger.info("Starting the application...")
+    main()
