@@ -39,9 +39,18 @@ application.add_handler(CommandHandler("start", start))
 # Flask route for webhook verification
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    asyncio.run(application.process_update(update))
-    return 'OK', 200
+    try:
+        payload = request.get_json(force=True)
+        if not payload or "message" not in payload or "date" not in payload["message"]:
+            logging.error("Invalid webhook payload: missing 'message' or 'date'.")
+            return "Invalid payload", 400
+
+        update = Update.de_json(payload, application.bot)
+        asyncio.run(application.process_update(update))
+        return "OK", 200
+    except Exception as e:
+        logging.error(f"Exception during webhook processing: {e}")
+        return "Internal Server Error", 500
 
 # Function to run the Flask app
 def run_flask():
