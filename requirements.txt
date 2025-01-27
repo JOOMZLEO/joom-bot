@@ -5,3 +5,4 @@ stripe==5.2.0
 Flask==2.3.2
 python-telegram-bot[job-queue,webhooks]==20.3
 httpx==0.24.1
+gunicorn==20.1.0
