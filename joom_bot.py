@@ -38,10 +38,14 @@ application.add_handler(CommandHandler("start", start))
 
 # Flask route for webhook verification
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
-    await application.process_update(update)
+    asyncio.run(application.process_update(update))
     return 'OK', 200
+
+# Function to run the Flask app
+def run_flask():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
 # Function to run the Telegram bot
 async def run_telegram():
@@ -59,7 +63,7 @@ def main():
     logging.info("Starting the application...")
 
     # Start Flask in a separate thread
-    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000))))
+    flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
     # Run Telegram bot
