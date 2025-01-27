@@ -8,7 +8,7 @@ import os
 import requests
 import stripe
 import datetime
-import threading
+import asyncio
 
 # Load environment variables
 load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
@@ -142,9 +142,17 @@ async def main():
     logger.info("Setting webhook...")
     await application.bot.set_webhook(url=WEBHOOK_URL)
 
-    # Run Flask for webhook handling
-    threading.Thread(target=run_flask, daemon=True).start()
+    # Start Flask in an asyncio task
+    logger.info("Starting Flask app...")
+    loop = asyncio.get_event_loop()
+    loop.create_task(asyncio.to_thread(run_flask))
+
+    # Keep the bot running
+    await application.run_webhook(
+        listen="0.0.0.0",
+        port=8000,
+        webhook_url=WEBHOOK_URL,
+    )
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
