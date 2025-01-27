@@ -21,6 +21,12 @@ STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
 TOYYIBPAY_BASE_URL = "https://toyyibpay.com"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
+# Debug: Log whether the bot token is loaded
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN not loaded from .env file. Check the .env file path and ensure it contains the token.")
+else:
+    print(f"Loaded BOT_TOKEN: {BOT_TOKEN}")
+
 # Initialize Stripe
 stripe.api_key = STRIPE_API_KEY
 
