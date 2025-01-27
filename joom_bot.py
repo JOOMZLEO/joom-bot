@@ -8,6 +8,7 @@ import os
 import stripe
 import datetime
 import threading
+import asyncio
 
 # Load environment variables from the specified .env file
 load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
@@ -42,6 +43,17 @@ async def webhook():
     await application.process_update(update)
     return 'OK', 200
 
+# Function to run the Telegram bot
+async def run_telegram():
+    # Initialize the application
+    await application.initialize()
+
+    # Start the application
+    await application.start()
+
+    # Idle to keep the bot running
+    await application.updater.idle()
+
 # Main function to run both Flask and Telegram bot
 def main():
     logging.info("Starting the application...")
@@ -50,12 +62,8 @@ def main():
     flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000))))
     flask_thread.start()
 
-    # Start the Telegram bot application
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get('PORT', 10000)),
-        webhook_url=WEBHOOK_URL,
-    )
+    # Run Telegram bot
+    asyncio.run(run_telegram())
 
 if __name__ == "__main__":
     main()
