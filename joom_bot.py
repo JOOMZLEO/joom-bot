@@ -11,7 +11,7 @@ import datetime
 import threading
 
 # Load environment variables
-load_dotenv(dotenv_path=".env")
+load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
 
 # Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -38,9 +38,15 @@ def telegram_webhook():
     """Handle incoming updates from Telegram."""
     if request.method == "POST":
         update_data = request.get_json()
+        logger.info(f"Received update: {update_data}")
         application.process_update(Update.de_json(update_data, application.bot))
         return "OK", 200
     return "Invalid request method", 400
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint."""
+    return "OK", 200
 
 async def start(update: Update, context):
     logger.info(f"Received /start command from {update.effective_user.username}")
@@ -117,7 +123,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8000))  # Use Render's PORT or default to 8000
     app.run(host="0.0.0.0", port=port, debug=False)
 
-def main():
+async def main():
     # Initialize bot
     logger.info("Initializing bot...")
     application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -128,10 +134,11 @@ def main():
 
     # Set webhook
     logger.info("Setting webhook...")
-    application.bot.set_webhook(url=WEBHOOK_URL)
+    await application.bot.set_webhook(url=WEBHOOK_URL)
 
     # Run Flask for webhook handling
     threading.Thread(target=run_flask, daemon=True).start()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
