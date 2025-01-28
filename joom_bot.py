@@ -29,12 +29,19 @@ logging.basicConfig(
 # Initialize the Telegram bot application
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# Define a simple command handler
+# Define a command handler for /start
 async def start(update: Update, context):
+    logging.info(f"/start command received from user: {update.effective_user.id}")
     await update.message.reply_text("Welcome to the bot!")
 
-# Add command handler to the application
+# Define a command handler for /subscribe
+async def subscribe(update: Update, context):
+    logging.info(f"/subscribe command received from user: {update.effective_user.id}")
+    await update.message.reply_text("Subscription feature is under construction!")
+
+# Add command handlers to the application
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("subscribe", subscribe))
 
 # Flask route for webhook verification
 @app.route('/webhook', methods=['POST'])
@@ -42,19 +49,19 @@ def webhook():
     try:
         payload = request.get_json(force=True)
         if not payload or "message" not in payload or "date" not in payload["message"]:
-            logging.error("Invalid webhook payload: missing 'message' or 'date'.")
+            logging.error(f"Invalid webhook payload: {payload}")
             return "Invalid payload", 400
 
         update = Update.de_json(payload, application.bot)
         asyncio.run(application.process_update(update))
         return "OK", 200
     except Exception as e:
-        logging.error(f"Exception during webhook processing: {e}")
+        logging.error(f"Exception during webhook processing: {str(e)}")
         return "Internal Server Error", 500
 
 # Function to run the Flask app
 def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
 
 # Function to run the Telegram bot
 async def run_telegram():
