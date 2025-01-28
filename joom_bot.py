@@ -1,161 +1,159 @@
 import sqlite3
 import logging
-from telegram import Update, Bot
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler
 from flask import Flask, request
 from dotenv import load_dotenv
 import os
+import requests
 import stripe
+import datetime
 import threading
 import asyncio
-import requests
 
 # Load environment variables from the specified .env file
 load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
 
-# Your bot token and API details from the .env file
+# Environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-GROUP_ID = os.getenv("GROUP_ID")
 TOYYIBPAY_API_KEY = os.getenv("TOYYIBPAY_API_KEY")
 TOYYIBPAY_CATEGORY_CODE = os.getenv("TOYYIBPAY_CATEGORY_CODE")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
+TOYYIBPAY_BASE_URL = "https://toyyibpay.com"
+SUCCESS_URL = os.getenv("SUCCESS_URL")
+CALLBACK_URL = os.getenv("CALLBACK_URL")
+GROUP_ID = int(os.getenv("GROUP_ID"))
+
+# Initialize Stripe
+stripe.api_key = STRIPE_API_KEY
+
+# Logging configuration
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Flask app setup
 app = Flask(__name__)
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
-# Initialize the Telegram bot application
+# Telegram bot application setup
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# Define the /start command handler
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info(f"/start command received from user: {update.effective_user.id}")
-    await update.message.reply_text("Welcome to the bot! Type /subscribe to get started.")
-
-# Define the /subscribe command handler
-async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info(f"/subscribe command received from user: {update.effective_user.id}")
-    payment_message = (
-        "Choose your payment method:\n"
-        "1. [Pay with ToyyibPay](https://sandbox.toyyibpay.com/{TOYYIBPAY_CATEGORY_CODE})\n"
-        "2. [Pay with Stripe](https://stripe.com/paylink)\n"
-        "Once payment is confirmed, you will be added to the group."
-    )
-    await update.message.reply_text(payment_message, parse_mode="Markdown")
-
-# Function to handle payment confirmation
-async def handle_payment_confirmation(user_id):
-    try:
-        bot = Bot(BOT_TOKEN)
-        await bot.add_chat_members(chat_id=GROUP_ID, user_ids=[user_id])
-        logging.info(f"User {user_id} added to group {GROUP_ID}")
-    except Exception as e:
-        logging.error(f"Failed to add user {user_id} to group {GROUP_ID}: {e}")
-
-# Define the webhook for payment confirmation
-@app.route('/toyyibpay/callback', methods=['POST'])
-def toyyibpay_callback():
-    try:
-        data = request.json
-        user_id = data.get('user_id')
-        if user_id:
-            asyncio.run_coroutine_threadsafe(handle_payment_confirmation(user_id), event_loop)
-            return "OK", 200
-        return "Invalid payload", 400
-    except Exception as e:
-        logging.error(f"Error in ToyyibPay callback: {e}")
-        return "Internal Server Error", 500
-
-@app.route('/stripe/webhook', methods=['POST'])
-def stripe_webhook():
-    try:
-        payload = request.get_data(as_text=True)
-        sig_header = request.headers.get('Stripe-Signature')
-        event = None
-
-        try:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
-            )
-        except ValueError as e:
-            logging.error(f"Invalid payload: {e}")
-            return "Invalid payload", 400
-        except stripe.error.SignatureVerificationError as e:
-            logging.error(f"Invalid signature: {e}")
-            return "Invalid signature", 400
-
-        if event['type'] == 'checkout.session.completed':
-            session = event['data']['object']
-            user_id = session.get('metadata', {}).get('user_id')
-            if user_id:
-                asyncio.run_coroutine_threadsafe(handle_payment_confirmation(user_id), event_loop)
-        return "OK", 200
-    except Exception as e:
-        logging.error(f"Error in Stripe webhook: {e}")
-        return "Internal Server Error", 500
-
-# Add command handlers to the application
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("subscribe", subscribe))
-
-# Global event loop for running async tasks
+# Event loop for async operations
 event_loop = asyncio.new_event_loop()
 
-# Flask route for Telegram webhook
-@app.route('/webhook', methods=['POST'])
-def webhook():
+@app.route('/success', methods=['GET', 'POST'])
+def success_callback():
+    data = request.get_json() if request.is_json else request.form.to_dict()
+    logger.info(f"Received success callback: {data}")
+    user_id = data.get("custom_field_user_id")  # Example custom field
+    if user_id:
+        asyncio.run_coroutine_threadsafe(add_user_to_group(int(user_id)), event_loop)
+    return "Success callback received", 200
+
+@app.route('/callback', methods=['GET', 'POST'])
+def payment_callback():
+    if request.method == 'POST':
+        data = request.get_json() if request.is_json else request.form.to_dict()
+        logger.info(f"Received payment callback: {data}")
+        return "Payment callback received", 200
+    return "Callback endpoint is running", 200
+
+async def start(update: Update, context):
+    logger.info(f"/start command received from user: {update.effective_user.id}")
+    await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
+
+async def subscribe(update: Update, context):
+    user = update.message.from_user
+    logger.info(f"/subscribe command received from user: {user.id}")
+
+    # Generate ToyyibPay Payment Link
+    toyibpay_link = None
+    payment_details = {
+        "userSecretKey": TOYYIBPAY_API_KEY,
+        "categoryCode": TOYYIBPAY_CATEGORY_CODE,
+        "billName": "Group Subscription",
+        "billDescription": "Subscription for Telegram Group Access",
+        "billPriceSetting": 1,
+        "billPayorInfo": 1,
+        "billAmount": "200",
+        "billReturnUrl": SUCCESS_URL,
+        "billCallbackUrl": CALLBACK_URL,
+        "billExternalReferenceNo": f"user_{user.id}_{datetime.datetime.now().timestamp()}",
+        "billTo": user.username or "Anonymous",
+        "billEmail": "example@example.com",
+        "billPhone": "0123456789",
+        "custom_field_user_id": user.id
+    }
+    response = requests.post(f"{TOYYIBPAY_BASE_URL}/index.php/api/createBill", data=payment_details)
+    if response.status_code == 200:
+        try:
+            payment_data = response.json()
+            if payment_data and isinstance(payment_data, list) and "BillCode" in payment_data[0]:
+                bill_code = payment_data[0]["BillCode"]
+                toyibpay_link = f"{TOYYIBPAY_BASE_URL}/{bill_code}"
+            else:
+                logger.error("Unexpected ToyyibPay response.")
+        except Exception as e:
+            logger.error(f"Error parsing ToyyibPay response: {e}")
+
+    # Generate Stripe Payment Link
+    stripe_link = None
     try:
-        payload = request.get_json(force=True)
-        if not payload or "message" not in payload or "date" not in payload["message"]:
-            logging.error(f"Invalid webhook payload: {payload}")
-            return "Invalid payload", 400
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "myr",
+                    "product_data": {"name": "Group Subscription"},
+                    "unit_amount": 200,
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=SUCCESS_URL,
+            cancel_url=CALLBACK_URL,
+            metadata={"user_id": user.id},
+        )
+        stripe_link = session.url
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {e}")
 
-        update = Update.de_json(payload, application.bot)
-        asyncio.run_coroutine_threadsafe(application.process_update(update), event_loop)
-        return "OK", 200
+    # Reply with Payment Links
+    if toyibpay_link or stripe_link:
+        message = "Choose your payment method:\n\n"
+        if toyibpay_link:
+            message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
+        if stripe_link:
+            message += f"2. [Pay with Stripe]({stripe_link})\n"
+        await update.message.reply_text(message, parse_mode="Markdown")
+    else:
+        await update.message.reply_text("Failed to generate payment links. Please try again later.")
+
+# Add user to Telegram group
+async def add_user_to_group(user_id):
+    try:
+        await application.bot.add_chat_member(chat_id=GROUP_ID, user_id=user_id)
+        logger.info(f"User {user_id} added to group {GROUP_ID}.")
     except Exception as e:
-        logging.error(f"Exception during webhook processing: {e}")
-        return "Internal Server Error", 500
+        logger.error(f"Failed to add user {user_id} to group: {e}")
 
-# Function to set the webhook URL
-async def set_webhook():
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-
-# Function to run the Flask app
+# Run Flask in a separate thread
 def run_flask():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
+    app.run(host="0.0.0.0", port=8000, debug=False)
 
-# Function to run the Telegram bot
-async def run_telegram():
-    await application.initialize()
-    await application.start()
-    await set_webhook()
-
-# Function to start the event loop
-def start_event_loop(loop):
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-# Main function to run Flask and Telegram bot
 def main():
-    logging.info("Starting the application...")
+    logger.info("Starting the bot application.")
 
-    # Start the event loop in a separate thread
-    event_loop_thread = threading.Thread(target=start_event_loop, args=(event_loop,))
-    event_loop_thread.start()
+    # Start event loop in a separate thread
+    threading.Thread(target=lambda: asyncio.run_coroutine_threadsafe(event_loop.run_forever(), event_loop), daemon=True).start()
 
     # Run Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.start()
+    threading.Thread(target=run_flask, daemon=True).start()
 
-    # Run Telegram bot
-    asyncio.run(run_telegram())
+    # Add command handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("subscribe", subscribe))
+
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
