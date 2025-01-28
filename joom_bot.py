@@ -6,7 +6,6 @@ from flask import Flask, request
 from dotenv import load_dotenv
 import os
 import stripe
-import datetime
 import threading
 import asyncio
 
@@ -29,21 +28,23 @@ logging.basicConfig(
 # Initialize the Telegram bot application
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# Define a command handler for /start
+# Define the /start command handler
 async def start(update: Update, context):
     logging.info(f"/start command received from user: {update.effective_user.id}")
-    await update.message.reply_text("Welcome to the bot!")
+    await update.message.reply_text("Welcome to the bot! Type /subscribe to get started.")
 
-# Define a command handler for /subscribe
+# Define the /subscribe command handler
 async def subscribe(update: Update, context):
     logging.info(f"/subscribe command received from user: {update.effective_user.id}")
-    await update.message.reply_text("Subscription feature is under construction!")
+    await update.message.reply_text(
+        "Subscription feature is active! Please provide your details to subscribe."
+    )
 
 # Add command handlers to the application
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# Flask route for webhook verification
+# Flask route for Telegram webhook
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
@@ -56,7 +57,7 @@ def webhook():
         asyncio.run(application.process_update(update))
         return "OK", 200
     except Exception as e:
-        logging.error(f"Exception during webhook processing: {str(e)}")
+        logging.error(f"Exception during webhook processing: {e}")
         return "Internal Server Error", 500
 
 # Function to run the Flask app
@@ -65,20 +66,15 @@ def run_flask():
 
 # Function to run the Telegram bot
 async def run_telegram():
-    # Initialize the application
     await application.initialize()
-
-    # Start the application
     await application.start()
+    await application.updater.start_polling()
 
-    # Idle to keep the bot running
-    await application.updater.idle()
-
-# Main function to run both Flask and Telegram bot
+# Main function to run Flask and Telegram bot
 def main():
     logging.info("Starting the application...")
 
-    # Start Flask in a separate thread
+    # Run Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
