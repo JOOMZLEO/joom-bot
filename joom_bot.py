@@ -54,11 +54,15 @@ def webhook():
             return "Invalid payload", 400
 
         update = Update.de_json(payload, application.bot)
-        asyncio.run(application.process_update(update))
+        asyncio.create_task(application.process_update(update))  # Use create_task instead of run
         return "OK", 200
     except Exception as e:
         logging.error(f"Exception during webhook processing: {e}")
         return "Internal Server Error", 500
+
+# Function to set the webhook URL
+async def set_webhook():
+    await application.bot.set_webhook(url=WEBHOOK_URL)
 
 # Function to run the Flask app
 def run_flask():
@@ -68,7 +72,7 @@ def run_flask():
 async def run_telegram():
     await application.initialize()
     await application.start()
-    await application.updater.start_polling()
+    await set_webhook()  # Set the webhook URL
 
 # Main function to run Flask and Telegram bot
 def main():
