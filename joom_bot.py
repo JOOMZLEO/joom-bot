@@ -1,58 +1,111 @@
 import sqlite3
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, JobQueue
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from flask import Flask, request
 from dotenv import load_dotenv
 import os
-import requests
 import stripe
-import datetime
 import threading
 import asyncio
-import queue
+import requests
 
 # Load environment variables from the specified .env file
 load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
 
 # Your bot token and API details from the .env file
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+GROUP_ID = os.getenv("GROUP_ID")
 TOYYIBPAY_API_KEY = os.getenv("TOYYIBPAY_API_KEY")
 TOYYIBPAY_CATEGORY_CODE = os.getenv("TOYYIBPAY_CATEGORY_CODE")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
-TOYYIBPAY_BASE_URL = "https://toyyibpay.com"  # Base URL for ToyyibPay API
 
-# Initialize Stripe
-stripe.api_key = STRIPE_API_KEY
-
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Flask app for handling webhooks
+# Flask app setup
 app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+# Initialize the Telegram bot application
+application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+# Define the /start command handler
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info(f"/start command received from user: {update.effective_user.id}")
+    await update.message.reply_text("Welcome to the bot! Type /subscribe to get started.")
+
+# Define the /subscribe command handler
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info(f"/subscribe command received from user: {update.effective_user.id}")
+    payment_message = (
+        "Choose your payment method:\n"
+        "1. [Pay with ToyyibPay](https://sandbox.toyyibpay.com/{TOYYIBPAY_CATEGORY_CODE})\n"
+        "2. [Pay with Stripe](https://stripe.com/paylink)\n"
+        "Once payment is confirmed, you will be added to the group."
+    )
+    await update.message.reply_text(payment_message, parse_mode="Markdown")
+
+# Function to handle payment confirmation
+async def handle_payment_confirmation(user_id):
+    try:
+        bot = Bot(BOT_TOKEN)
+        await bot.add_chat_members(chat_id=GROUP_ID, user_ids=[user_id])
+        logging.info(f"User {user_id} added to group {GROUP_ID}")
+    except Exception as e:
+        logging.error(f"Failed to add user {user_id} to group {GROUP_ID}: {e}")
+
+# Define the webhook for payment confirmation
+@app.route('/toyyibpay/callback', methods=['POST'])
+def toyyibpay_callback():
+    try:
+        data = request.json
+        user_id = data.get('user_id')
+        if user_id:
+            asyncio.run_coroutine_threadsafe(handle_payment_confirmation(user_id), event_loop)
+            return "OK", 200
+        return "Invalid payload", 400
+    except Exception as e:
+        logging.error(f"Error in ToyyibPay callback: {e}")
+        return "Internal Server Error", 500
+
+@app.route('/stripe/webhook', methods=['POST'])
+def stripe_webhook():
+    try:
+        payload = request.get_data(as_text=True)
+        sig_header = request.headers.get('Stripe-Signature')
+        event = None
+
+        try:
+            event = stripe.Webhook.construct_event(
+                payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
+            )
+        except ValueError as e:
+            logging.error(f"Invalid payload: {e}")
+            return "Invalid payload", 400
+        except stripe.error.SignatureVerificationError as e:
+            logging.error(f"Invalid signature: {e}")
+            return "Invalid signature", 400
+
+        if event['type'] == 'checkout.session.completed':
+            session = event['data']['object']
+            user_id = session.get('metadata', {}).get('user_id')
+            if user_id:
+                asyncio.run_coroutine_threadsafe(handle_payment_confirmation(user_id), event_loop)
+        return "OK", 200
+    except Exception as e:
+        logging.error(f"Error in Stripe webhook: {e}")
+        return "Internal Server Error", 500
+
+# Add command handlers to the application
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("subscribe", subscribe))
 
 # Global event loop for running async tasks
 event_loop = asyncio.new_event_loop()
-
-# Thread-safe queue for updates
-update_queue = queue.Queue()
-
-# Background task to process updates
-async def process_updates():
-    while True:
-        try:
-            # Get the next update from the queue
-            update = update_queue.get()
-            if update is None:
-                break  # Exit if None is received
-
-            # Process the update
-            await application.process_update(update)
-        except Exception as e:
-            logging.error(f"Exception during update processing: {e}")
 
 # Flask route for Telegram webhook
 @app.route('/webhook', methods=['POST'])
@@ -64,180 +117,42 @@ def webhook():
             return "Invalid payload", 400
 
         update = Update.de_json(payload, application.bot)
-        # Add the update to the queue for processing
-        update_queue.put(update)
+        asyncio.run_coroutine_threadsafe(application.process_update(update), event_loop)
         return "OK", 200
     except Exception as e:
         logging.error(f"Exception during webhook processing: {e}")
         return "Internal Server Error", 500
 
-@app.route('/success', methods=['GET', 'POST'])
-def success_callback():
-    data = request.get_json() if request.is_json else request.form.to_dict()
-    logger.info(f"Received success callback: {data}")
-    return "Success callback received", 200
-
-@app.route('/callback', methods=['GET', 'POST'])
-def payment_callback():
-    if request.method == 'POST':
-        data = request.get_json() if request.is_json else request.form.to_dict()
-        logger.info(f"Received payment callback: {data}")
-        # Add logic to validate and process the payment
-        return "Payment callback received", 200
-    return "Callback endpoint is running", 200
-
-async def start(update: Update, context):
-    logger.info(f"Received /start command from {update.effective_user.username}")
-    await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
-
-async def subscribe(update, context):
-    user = update.message.from_user
-
-    # Step 1: Generate ToyyibPay Payment Link
-    toyibpay_link = None
-    payment_details = {
-        "userSecretKey": TOYYIBPAY_API_KEY,
-        "categoryCode": TOYYIBPAY_CATEGORY_CODE,
-        "billName": "Group Subscription",
-        "billDescription": "Subscription for Telegram Group Access",
-        "billPriceSetting": 1,
-        "billPayorInfo": 1,
-        "billAmount": "200",  # Amount in cents (e.g., RM2.00)
-        "billReturnUrl": os.getenv("SUCCESS_URL"),
-        "billCallbackUrl": os.getenv("CALLBACK_URL"),
-        "billExternalReferenceNo": f"user_{user.id}_{datetime.datetime.now().timestamp()}",
-        "billTo": user.username or "Anonymous",
-        "billEmail": "example@example.com",
-        "billPhone": "0123456789",
-    }  # Ensure the dictionary is properly closed
-
-    response = requests.post(f"{TOYYIBPAY_BASE_URL}/index.php/api/createBill", data=payment_details)
-
-    if response.status_code == 200:
-        try:
-            payment_data = response.json()
-            if payment_data and isinstance(payment_data, list) and "BillCode" in payment_data[0]:
-                bill_code = payment_data[0]["BillCode"]
-                toyibpay_link = f"{TOYYIBPAY_BASE_URL}/{bill_code}"
-            else:
-                logger.error("Unexpected ToyyibPay response.")
-        except Exception as e:
-            logger.error(f"Error parsing ToyyibPay response: {e}")
-
-    # Step 2: Generate Stripe Payment Link
-    stripe_link = None
-    try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": "myr",
-                        "product_data": {"name": "Group Subscription"},
-                        "unit_amount": 200,  # Amount in cents (e.g., RM2.00)
-                    },
-                    "quantity": 1,
-                }
-            ],
-            mode="payment",
-            success_url=os.getenv("SUCCESS_URL"),
-            cancel_url=os.getenv("CANCEL_URL"),
-        )
-        stripe_link = session.url
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error: {e}")
-
-    # Step 3: Reply with Both Payment Links
-    if toyibpay_link or stripe_link:
-        message = "Choose your payment method:\n\n"
-        if toyibpay_link:
-            message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
-        if stripe_link:
-            message += f"2. [Pay with Stripe]({stripe_link})\n"
-
-        await update.message.reply_text(message, parse_mode="Markdown")
-    else:
-        await update.message.reply_text("Failed to generate payment links. Please try again later.")
-
-# Database setup
-def setup_database():
-    conn = sqlite3.connect("subscriptions.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            subscription_expiry DATE
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def add_user_to_db(user_id, username):
-    conn = sqlite3.connect("subscriptions.db")
-    cursor = conn.cursor()
-    expiry_date = (datetime.datetime.now() + datetime.timedelta(days=30)).strftime("%Y-%m-%d")
-    cursor.execute("REPLACE INTO users (user_id, username, subscription_expiry) VALUES (?, ?, ?)",
-                   (user_id, username, expiry_date))
-    conn.commit()
-    conn.close()
-
-def remove_expired_users(bot, group_id):
-    conn = sqlite3.connect("subscriptions.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT user_id, subscription_expiry FROM users")
-    rows = cursor.fetchall()
-
-    for user_id, expiry_date in rows:
-        if datetime.datetime.strptime(expiry_date, "%Y-%m-%d") < datetime.datetime.now():
-            bot.kick_chat_member(chat_id=group_id, user_id=user_id)
-            cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-# Check expired subscriptions every 24 hours
-async def check_subscriptions(context):
-    group_id = os.getenv("GROUP_ID")
-    remove_expired_users(context.bot, group_id)
+# Function to set the webhook URL
+async def set_webhook():
+    await application.bot.set_webhook(url=WEBHOOK_URL)
 
 # Function to run the Flask app
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 10000)), debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)), debug=False)
 
-# Function to start the background task
-def start_background_task(loop):
+# Function to run the Telegram bot
+async def run_telegram():
+    await application.initialize()
+    await application.start()
+    await set_webhook()
+
+# Function to start the event loop
+def start_event_loop(loop):
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(process_updates())
+    loop.run_forever()
 
 # Main function to run Flask and Telegram bot
 def main():
     logging.info("Starting the application...")
 
-    # Create and start the event loop for the background task
-    event_loop = asyncio.new_event_loop()
-    background_thread = threading.Thread(target=start_background_task, args=(event_loop,))
-    background_thread.start()
+    # Start the event loop in a separate thread
+    event_loop_thread = threading.Thread(target=start_event_loop, args=(event_loop,))
+    event_loop_thread.start()
 
     # Run Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
-
-    # Initialize bot
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    setup_database()
-
-    # Initialize JobQueue
-    job_queue = JobQueue()
-    job_queue.set_application(application)  # Link the JobQueue to your application
-    logger.info("JobQueue set up.")
-
-    # Schedule the subscription check
-    job_queue.run_repeating(check_subscriptions, interval=86400, first=0)  # Every 24 hours
-    logger.info("Scheduled subscription check.")
-
-    # Add command handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("subscribe", subscribe))
 
     # Run Telegram bot
     asyncio.run(run_telegram())
