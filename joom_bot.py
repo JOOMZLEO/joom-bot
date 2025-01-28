@@ -44,6 +44,9 @@ async def subscribe(update: Update, context):
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
+# Global event loop for running async tasks
+event_loop = asyncio.new_event_loop()
+
 # Flask route for Telegram webhook
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -54,7 +57,8 @@ def webhook():
             return "Invalid payload", 400
 
         update = Update.de_json(payload, application.bot)
-        asyncio.create_task(application.process_update(update))  # Use create_task instead of run
+        # Use run_coroutine_threadsafe to run the coroutine in the event loop
+        asyncio.run_coroutine_threadsafe(application.process_update(update), event_loop)
         return "OK", 200
     except Exception as e:
         logging.error(f"Exception during webhook processing: {e}")
@@ -74,9 +78,18 @@ async def run_telegram():
     await application.start()
     await set_webhook()  # Set the webhook URL
 
+# Function to start the event loop
+def start_event_loop(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
 # Main function to run Flask and Telegram bot
 def main():
     logging.info("Starting the application...")
+
+    # Start the event loop in a separate thread
+    event_loop_thread = threading.Thread(target=start_event_loop, args=(event_loop,))
+    event_loop_thread.start()
 
     # Run Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask)
