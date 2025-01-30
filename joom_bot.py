@@ -1,4 +1,3 @@
-import datetime
 import logging
 import os
 import stripe
@@ -8,13 +7,13 @@ import hashlib
 import asyncio
 from quart import Quart, request, jsonify
 from telegram import Update
-from telegram.ext import Application, CommandHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
 from dotenv import load_dotenv
 import hypercorn.asyncio
 import hypercorn.config
 
 # Load environment variables
-load_dotenv()
+load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
 
 # Required environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -22,12 +21,11 @@ TOYYIBPAY_API_KEY = os.getenv("TOYYIBPAY_API_KEY")
 TOYYIBPAY_CATEGORY_CODE = os.getenv("TOYYIBPAY_CATEGORY_CODE")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
 GROUP_ID = os.getenv("GROUP_ID")
-TOYYIBPAY_BASE_URL = "https://toyyibpay.com"
 SUCCESS_URL = os.getenv("SUCCESS_URL")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-# Validate all environment variables
+# Validate environment variables
 required_env_vars = [BOT_TOKEN, TOYYIBPAY_API_KEY, TOYYIBPAY_CATEGORY_CODE, STRIPE_API_KEY, GROUP_ID, SUCCESS_URL, CALLBACK_URL, STRIPE_WEBHOOK_SECRET]
 if not all(required_env_vars):
     raise EnvironmentError("Missing one or more required environment variables.")
@@ -39,15 +37,14 @@ stripe.api_key = STRIPE_API_KEY
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Quart app
+# Initialize Quart app
 app = Quart(__name__)
 
-# Telegram bot application
-application = Application.builder().token(BOT_TOKEN).build()
+# Initialize Telegram bot
+application = ApplicationBuilder().token(BOT_TOKEN).build()
 
 # --- Function: Generate Invite Link ---
 async def generate_invite_link():
-    """Generate a Telegram invite link for the group."""
     try:
         invite_link = await application.bot.create_chat_invite_link(chat_id=GROUP_ID)
         logger.info(f"Generated invite link: {invite_link.invite_link}")
@@ -59,7 +56,6 @@ async def generate_invite_link():
 # --- Route: ToyyibPay Success Callback ---
 @app.route('/success', methods=['POST'])
 async def success_callback():
-    """Handles ToyyibPay success callbacks securely."""
     data = await request.form
     data = data.to_dict()
     logger.info(f"Received success callback: {data}")
@@ -87,8 +83,7 @@ async def success_callback():
 # --- Route: Stripe Webhook ---
 @app.route('/stripe_webhook', methods=['POST'])
 async def stripe_webhook():
-    """Handles Stripe webhook securely with signature verification."""
-    payload = await request.get_data()
+    payload = await request.get_data(as_text=True)
     sig_header = request.headers.get("Stripe-Signature")
 
     try:
@@ -106,32 +101,37 @@ async def stripe_webhook():
     
     return "", 200
 
-# --- Function: Start Telegram Bot ---
-async def start(update: Update, context):
+# --- Route: Telegram Webhook ---
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
+    update = Update.de_json(await request.get_json(), application.bot)
+    await application.process_update(update)
+    return "", 200
+
+# --- Function: Start Command ---
+async def start(update: Update, context: CallbackContext):
     logger.info(f"Received /start command from {update.effective_user.username}")
     await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
 
 # --- Function: Subscription Command ---
-async def subscribe(update: Update, context):
-    logger.info(f"Received /subscribe command from {update.effective_user.username}")
+async def subscribe(update: Update, context: CallbackContext):
     await update.message.reply_text("Subscription process will be implemented.")
 
-# Start Telegram bot handlers
+# Add command handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# Run Quart and Telegram Bot
+# --- Main Function ---
 async def main():
+    # Start the Telegram bot
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
+    # Start Quart server
     config = hypercorn.config.Config()
     config.bind = ["0.0.0.0:10000"]
-    
-    # Start the Telegram bot in a separate task
-    bot_task = asyncio.create_task(application.run_polling())
-    
-    # Start the Quart web server
     await hypercorn.asyncio.serve(app, config)
-    
-    await bot_task
 
 if __name__ == "__main__":
     asyncio.run(main())
