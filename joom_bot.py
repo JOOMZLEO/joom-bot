@@ -1,34 +1,24 @@
-import datetime
 import logging
 import os
 import stripe
-import requests
-import threading
-import time
-import hmac
-import hashlib
-from flask import Flask, request, abort
+import asyncio
+from quart import Quart, request, jsonify
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
+load_dotenv()
 
-# Required environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-TOYYIBPAY_API_KEY = os.getenv("TOYYIBPAY_API_KEY")
-TOYYIBPAY_CATEGORY_CODE = os.getenv("TOYYIBPAY_CATEGORY_CODE")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 GROUP_ID = os.getenv("GROUP_ID")
-TOYYIBPAY_BASE_URL = "https://toyyibpay.com"
 SUCCESS_URL = os.getenv("SUCCESS_URL")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-# Validate all environment variables
-required_env_vars = [BOT_TOKEN, TOYYIBPAY_API_KEY, TOYYIBPAY_CATEGORY_CODE, STRIPE_API_KEY, GROUP_ID, SUCCESS_URL, CALLBACK_URL, STRIPE_WEBHOOK_SECRET]
-if any(var is None or var == "" for var in required_env_vars):
+# Validate required environment variables
+if not all([BOT_TOKEN, STRIPE_API_KEY, GROUP_ID, SUCCESS_URL, CALLBACK_URL, STRIPE_WEBHOOK_SECRET]):
     raise EnvironmentError("Missing one or more required environment variables.")
 
 # Initialize Stripe
@@ -38,120 +28,87 @@ stripe.api_key = STRIPE_API_KEY
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask app
-app = Flask(__name__)
+# Quart app
+app = Quart(__name__)
 
 # Telegram bot application
-application = ApplicationBuilder().token(BOT_TOKEN).build()
+telegram_app = Application.builder().token(BOT_TOKEN).build()
 
-# --- Function: Generate Invite Link ---
-def generate_invite_link():
-    """Generate a Telegram invite link for the group."""
-    try:
-        invite_link = application.bot.create_chat_invite_link(chat_id=GROUP_ID)
-        logger.info(f"Generated invite link: {invite_link.invite_link}")
-        return invite_link.invite_link
-    except Exception as e:
-        logger.error(f"Failed to generate invite link: {e}")
-        return None
-
-# --- Route: ToyyibPay Success Callback ---
-@app.route('/success', methods=['POST'])
-def success_callback():
-    """Handles ToyyibPay success callbacks securely."""
-    data = request.form.to_dict()
-    logger.info(f"Received success callback: {data}")
-
-    # Validate payment with userSecretKey
-    if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
-        order_id = data["billExternalReferenceNo"]
-        if order_id.startswith("user_"):
-            try:
-                user_id = int(order_id.split('_')[1])
-                invite_link = generate_invite_link()
-                if invite_link:
-                    application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
-                else:
-                    application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
-            except (IndexError, ValueError) as e:
-                logger.error(f"Invalid order_id format: {order_id} - {e}")
-        else:
-            logger.error(f"Invalid order_id: {order_id}")
-    else:
-        logger.error("Failed payment validation.")
-        abort(400)
-    
-    return "Success callback received", 200
+# --- Route: Webhook for Telegram Bot ---
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
+    update = Update.de_json(await request.json, telegram_app.bot)
+    await telegram_app.process_update(update)
+    return jsonify({"status": "ok"})
 
 # --- Route: Stripe Webhook ---
 @app.route('/stripe_webhook', methods=['POST'])
-def stripe_webhook():
-    """Handles Stripe webhook securely with signature verification."""
-    payload = request.get_data(as_text=True)
+async def stripe_webhook():
+    payload = await request.data
     sig_header = request.headers.get("Stripe-Signature")
 
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
         if event["type"] == "checkout.session.completed":
             user_id = int(event["data"]["object"]["metadata"]["user_id"])
-            invite_link = generate_invite_link()
+            invite_link = await generate_invite_link()
             if invite_link:
-                application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
-            else:
-                application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
+                await telegram_app.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
     except stripe.error.SignatureVerificationError:
         logger.error("Stripe webhook signature verification failed.")
-        abort(400)
-    
-    return "", 200
+        return jsonify({"error": "Invalid signature"}), 400
 
-# --- Route: Telegram Webhook ---
-@app.route('/webhook', methods=['POST'])
-def telegram_webhook():
-    """Handles incoming Telegram webhook updates."""
-    data = request.get_json()
-    update = Update.de_json(data, application.bot)
-    
-    application.initialize()  # Ensure the application is initialized
-    application.process_update(update)
-    return "", 200
+    return jsonify({"status": "ok"})
 
-# --- Function: Start Telegram Bot ---
-async def start(update: Update, context):
-    logger.info(f"Received /start command from {update.effective_user.username}")
+# --- Function: Generate Invite Link ---
+async def generate_invite_link():
+    try:
+        invite_link = await telegram_app.bot.create_chat_invite_link(chat_id=GROUP_ID)
+        logger.info(f"Generated invite link: {invite_link.invite_link}")
+        return invite_link.invite_link
+    except Exception as e:
+        logger.error(f"Failed to generate invite link: {e}")
+        return None
+
+# --- Telegram Bot Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
 
-# --- Function: Subscription Command ---
-async def subscribe(update: Update, context):
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.message.from_user
-    await update.message.reply_text("Subscription logic to be implemented.")
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": "Group Subscription"},
+                    "unit_amount": 500,
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=SUCCESS_URL,
+            cancel_url=CALLBACK_URL,
+            metadata={"user_id": user.id},
+        )
+        await update.message.reply_text(f"Pay here: {session.url}")
+    except Exception as e:
+        logger.error(f"Error creating Stripe session: {e}")
+        await update.message.reply_text("Failed to create payment link. Try again later.")
 
-# Start Telegram bot
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("subscribe", subscribe))
-
-# Run Flask and Telegram bot in separate threads
-stop_event = threading.Event()
-
-def run_flask():
-    app.run(host='0.0.0.0', port=10000)
-    stop_event.set()
-
-def run_telegram_bot():
-    application.run_polling()
-    stop_event.set()
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("subscribe", subscribe))
 
 if __name__ == "__main__":
-    flask_thread = threading.Thread(target=run_flask)
-    bot_thread = threading.Thread(target=run_telegram_bot)
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
 
-    flask_thread.start()
-    bot_thread.start()
+    # Set up webhook for Telegram
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(telegram_app.bot.set_webhook(url=f"{CALLBACK_URL}/webhook"))
 
-    try:
-        while not stop_event.is_set():
-            time.sleep(1)
-    except KeyboardInterrupt:
-        stop_event.set()
-        flask_thread.join()
-        bot_thread.join()
+    # Run Quart with Hypercorn
+    config = Config()
+    config.bind = ["0.0.0.0:10000"]
+    loop.run_until_complete(serve(app, config))
