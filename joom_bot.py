@@ -148,14 +148,20 @@ def main():
 
     # Start Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True  # This ensures the Flask thread will exit when the main thread exits
     flask_thread.start()
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("subscribe", subscribe))
 
-    # Start the bot
-    application.run_polling()
+    # Start the bot with error handling
+    try:
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+    finally:
+        logger.info("Bot has stopped.")
 
 if __name__ == "__main__":
     main()
