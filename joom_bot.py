@@ -53,19 +53,12 @@ async def generate_invite_link():
         logger.error(f"Failed to generate invite link: {e}")
         return None
 
-# --- Route: Telegram Webhook ---
-@app.route("/webhook", methods=["POST"])
-async def telegram_webhook():
-    """Handles incoming Telegram webhook updates."""
-    update = Update.de_json(await request.json, application.bot)
-    await application.process_update(update)
-    return "", 200
-
 # --- Route: ToyyibPay Success Callback ---
 @app.route('/success', methods=['POST'])
 async def success_callback():
     """Handles ToyyibPay success callbacks securely."""
     data = await request.form
+    data = data.to_dict()
     logger.info(f"Received success callback: {data}")
 
     if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
@@ -92,7 +85,7 @@ async def success_callback():
 @app.route('/stripe_webhook', methods=['POST'])
 async def stripe_webhook():
     """Handles Stripe webhook securely with signature verification."""
-    payload = await request.get_data(as_text=True)
+    payload = await request.data
     sig_header = request.headers.get("Stripe-Signature")
 
     try:
@@ -110,28 +103,66 @@ async def stripe_webhook():
     
     return "", 200
 
-# --- Function: Start Telegram Bot ---
-async def start(update: Update, context):
-    logger.info(f"Received /start command from {update.effective_user.username}")
-    await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
-
 # --- Function: Subscription Command ---
 async def subscribe(update: Update, context):
-    await update.message.reply_text("Subscription process will be implemented.")
+    user = update.message.from_user
 
-# Add handlers to the bot
-application.add_handler(CommandHandler("start", start))
+    # Step 1: Generate ToyyibPay Payment Link
+    toyibpay_link = None
+    payment_details = {
+        "userSecretKey": TOYYIBPAY_API_KEY,
+        "categoryCode": TOYYIBPAY_CATEGORY_CODE,
+        "billName": "Group Subscription",
+        "billDescription": "Subscription for Telegram Group Access",
+        "billPriceSetting": 1,
+        "billPayorInfo": 1,
+        "billAmount": "200",
+        "billReturnUrl": SUCCESS_URL,
+        "billCallbackUrl": CALLBACK_URL,
+        "billExternalReferenceNo": f"user_{user.id}_{datetime.datetime.now().timestamp()}",
+        "billTo": user.username or "Anonymous",
+        "billEmail": "example@example.com",
+        "billPhone": "0123456789",
+    }
+
+    response = requests.post(f"{TOYYIBPAY_BASE_URL}/index.php/api/createBill", data=payment_details)
+    if response.status_code == 200:
+        try:
+            payment_data = response.json()
+            bill_code = payment_data[0]["BillCode"]
+            toyibpay_link = f"{TOYYIBPAY_BASE_URL}/{bill_code}"
+        except Exception as e:
+            logger.error(f"Error parsing ToyyibPay response: {e}")
+
+    # Step 2: Generate Stripe Payment Link
+    stripe_link = None
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{"price_data": {"currency": "myr", "product_data": {"name": "Group Subscription"}, "unit_amount": 200}, "quantity": 1}],
+            mode="payment",
+            success_url=SUCCESS_URL,
+            cancel_url=CALLBACK_URL,
+            metadata={"user_id": user.id},
+        )
+        stripe_link = session.url
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {e}")
+
+    # Send Payment Links
+    if toyibpay_link or stripe_link:
+        message = "Choose your payment method:\n\n"
+        if toyibpay_link:
+            message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
+        if stripe_link:
+            message += f"2. [Pay with Stripe]({stripe_link})\n"
+        await update.message.reply_text(message, parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ Payment link generation failed. Please try again later.")
+
+# Start Telegram bot
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# Run services separately
 if __name__ == "__main__":
     import hypercorn.asyncio
-    import asyncio
-
-    async def run():
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling()
-        await hypercorn.asyncio.serve(app, hypercorn.Config.from_mapping(bind=["0.0.0.0:10000"]))
-    
-    asyncio.run(run())
+    hypercorn.asyncio.run(app, bind="0.0.0.0:10000")
