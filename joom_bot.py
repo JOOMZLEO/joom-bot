@@ -2,7 +2,6 @@ import logging
 import os
 import stripe
 import hmac
-import asyncio
 from quart import Quart, request, abort
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler
@@ -73,6 +72,7 @@ async def success_callback():
     data = await request.form
     logger.info(f"Received success callback: {data}")
 
+    # Validate payment with userSecretKey
     if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
         order_id = data["billExternalReferenceNo"]
         if order_id.startswith("user_"):
@@ -150,15 +150,7 @@ async def start(update: Update, context):
 async def subscribe(update: Update, context):
     """Handles the /subscribe command."""
     user = update.message.from_user
-    toyibpay_link = f"https://toyyibpay.com/{TOYYIBPAY_CATEGORY_CODE}"
-    stripe_link = "https://your_stripe_payment_link_here"
-
-    await update.message.reply_text(
-        f"Choose a payment method:\n\n"
-        f"1️⃣ [Pay with ToyyibPay]({toyibpay_link})\n"
-        f"2️⃣ [Pay with Stripe]({stripe_link})",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("Processing your subscription...")
 
 # Add Telegram bot handlers
 application.add_handler(CommandHandler("start", start))
@@ -166,12 +158,10 @@ application.add_handler(CommandHandler("subscribe", subscribe))
 
 # --- Main Function ---
 async def main():
+    """Start the bot with webhook mode."""
     logging.info("Starting the bot with webhook...")
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    await application.start()
     await application.run_webhook(listen='0.0.0.0', port=10000, webhook_url=WEBHOOK_URL)
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
     app.run(port=10000)
