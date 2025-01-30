@@ -60,7 +60,6 @@ async def success_callback():
     data = await request.form
     logger.info(f"Received success callback: {data}")
 
-    # Validate payment with userSecretKey
     if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
         order_id = data["billExternalReferenceNo"]
         if order_id.startswith("user_"):
@@ -78,7 +77,7 @@ async def success_callback():
     else:
         logger.error("Failed payment validation.")
         abort(400)
-    
+
     return "Success callback received", 200
 
 # --- Route: Stripe Webhook ---
@@ -100,7 +99,7 @@ async def stripe_webhook():
     except stripe.error.SignatureVerificationError:
         logger.error("Stripe webhook signature verification failed.")
         abort(400)
-    
+
     return "", 200
 
 # --- Route: ToyyibPay Callback ---
@@ -109,11 +108,11 @@ async def payment_callback():
     """Handles ToyyibPay payment callback securely."""
     data = await request.form
     logger.info(f"Received payment callback: {data}")
-    
+
     if not hmac.compare_digest(data.get("userSecretKey", ""), TOYYIBPAY_API_KEY):
         logger.error("Unauthorized callback request.")
         abort(403)
-    
+
     return "Payment callback received", 200
 
 # --- Function: Start Telegram Bot ---
@@ -178,25 +177,9 @@ async def subscribe(update: Update, context):
     else:
         await update.message.reply_text("❌ Payment link generation failed. Please try again later.")
 
-# Add Telegram command handlers
+# Start Telegram bot
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# Run Quart app and Telegram bot
 if __name__ == "__main__":
-    import asyncio
-    from hypercorn.asyncio import serve
-    from hypercorn.config import Config
-
-    # Configure Hypercorn
-    config = Config()
-    config.bind = ["0.0.0.0:10000"]
-
-    # Start Quart and Telegram bot
-    async def run():
-        await asyncio.gather(
-            serve(app, config),
-            application.run_webhook(listen="0.0.0.0", port=10000, webhook_url=os.getenv("WEBHOOK_URL")),
-        )
-
-    asyncio.run(run())
+    app.run(host="0.0.0.0", port=10000)
