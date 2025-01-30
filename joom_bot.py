@@ -4,6 +4,7 @@ import os
 import stripe
 import requests
 import threading
+import time
 import hmac
 import hashlib
 from flask import Flask, request, abort
@@ -27,7 +28,7 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
 # Validate all environment variables
 required_env_vars = [BOT_TOKEN, TOYYIBPAY_API_KEY, TOYYIBPAY_CATEGORY_CODE, STRIPE_API_KEY, GROUP_ID, SUCCESS_URL, CALLBACK_URL, STRIPE_WEBHOOK_SECRET]
-if not all(required_env_vars):
+if any(var is None or var == "" for var in required_env_vars):
     raise EnvironmentError("Missing one or more required environment variables.")
 
 # Initialize Stripe
@@ -106,13 +107,13 @@ def stripe_webhook():
 
 # --- Route: Telegram Webhook ---
 @app.route('/webhook', methods=['POST'])
-async def telegram_webhook():
+def telegram_webhook():
     """Handles incoming Telegram webhook updates."""
-    data = await request.get_json()
+    data = request.get_json()
     update = Update.de_json(data, application.bot)
     
-    await application.initialize()  # Ensure the application is initialized
-    await application.process_update(update)
+    application.initialize()  # Ensure the application is initialized
+    application.process_update(update)
     return "", 200
 
 # --- Function: Start Telegram Bot ---
@@ -129,7 +130,28 @@ async def subscribe(update: Update, context):
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# Run Flask
-if __name__ == "__main__":
-    threading.Thread(target=app.run, kwargs={'host': '0.0.0.0', 'port': 10000}).start()
+# Run Flask and Telegram bot in separate threads
+stop_event = threading.Event()
+
+def run_flask():
+    app.run(host='0.0.0.0', port=10000)
+    stop_event.set()
+
+def run_telegram_bot():
     application.run_polling()
+    stop_event.set()
+
+if __name__ == "__main__":
+    flask_thread = threading.Thread(target=run_flask)
+    bot_thread = threading.Thread(target=run_telegram_bot)
+
+    flask_thread.start()
+    bot_thread.start()
+
+    try:
+        while not stop_event.is_set():
+            time.sleep(1)
+    except KeyboardInterrupt:
+        stop_event.set()
+        flask_thread.join()
+        bot_thread.join()
