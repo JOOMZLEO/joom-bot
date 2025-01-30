@@ -157,11 +157,5 @@ application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
 # --- Main Function ---
-async def main():
-    """Start the bot with webhook mode."""
-    logging.info("Starting the bot with webhook...")
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    await application.run_webhook(listen='0.0.0.0', port=10000, webhook_url=WEBHOOK_URL)
-
 if __name__ == "__main__":
-    app.run(port=10000)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
