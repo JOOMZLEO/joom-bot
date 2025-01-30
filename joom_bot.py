@@ -65,6 +65,15 @@ async def generate_invite_link():
         logger.error(f"Failed to generate invite link: {e}")
         return None
 
+# --- Route: Telegram Webhook ---
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
+    """Handles Telegram updates via webhook."""
+    data = await request.get_json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return "OK", 200
+
 # --- Route: ToyyibPay Success Callback ---
 @app.route('/success', methods=['POST'])
 async def success_callback():
@@ -140,22 +149,14 @@ async def payment_callback():
 
     return "Payment callback received", 200
 
-# --- Function: Start Telegram Bot ---
-async def start(update: Update, context):
-    """Handles the /start command."""
-    logger.info(f"Received /start command from {update.effective_user.username}")
-    await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
-
-# --- Function: Subscription Command ---
-async def subscribe(update: Update, context):
-    """Handles the /subscribe command."""
-    user = update.message.from_user
-    await update.message.reply_text("Processing your subscription...")
-
-# Add Telegram bot handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("subscribe", subscribe))
-
 # --- Main Function ---
+async def main():
+    """Start the bot with webhook mode."""
+    logging.info("Starting the bot with webhook...")
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+    app.run(host='0.0.0.0', port=10000)
