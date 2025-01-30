@@ -1,3 +1,4 @@
+import datetime
 import logging
 import os
 import stripe
@@ -5,12 +6,10 @@ import requests
 import hmac
 import hashlib
 import asyncio
-from quart import Quart, request, jsonify
+from quart import Quart, request, abort
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
+from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
-import hypercorn.asyncio
-import hypercorn.config
 
 # Load environment variables
 load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
@@ -25,7 +24,7 @@ SUCCESS_URL = os.getenv("SUCCESS_URL")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-# Validate environment variables
+# Validate all environment variables
 required_env_vars = [BOT_TOKEN, TOYYIBPAY_API_KEY, TOYYIBPAY_CATEGORY_CODE, STRIPE_API_KEY, GROUP_ID, SUCCESS_URL, CALLBACK_URL, STRIPE_WEBHOOK_SECRET]
 if not all(required_env_vars):
     raise EnvironmentError("Missing one or more required environment variables.")
@@ -37,14 +36,15 @@ stripe.api_key = STRIPE_API_KEY
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize Quart app
+# Quart app
 app = Quart(__name__)
 
-# Initialize Telegram bot
-application = ApplicationBuilder().token(BOT_TOKEN).build()
+# Telegram bot application
+application = Application.builder().token(BOT_TOKEN).build()
 
 # --- Function: Generate Invite Link ---
 async def generate_invite_link():
+    """Generate a Telegram invite link for the group."""
     try:
         invite_link = await application.bot.create_chat_invite_link(chat_id=GROUP_ID)
         logger.info(f"Generated invite link: {invite_link.invite_link}")
@@ -56,6 +56,7 @@ async def generate_invite_link():
 # --- Route: ToyyibPay Success Callback ---
 @app.route('/success', methods=['POST'])
 async def success_callback():
+    """Handles ToyyibPay success callbacks securely."""
     data = await request.form
     data = data.to_dict()
     logger.info(f"Received success callback: {data}")
@@ -76,62 +77,49 @@ async def success_callback():
             logger.error(f"Invalid order_id: {order_id}")
     else:
         logger.error("Failed payment validation.")
-        return "Invalid request", 400
+        abort(400)
     
     return "Success callback received", 200
-
-# --- Route: Stripe Webhook ---
-@app.route('/stripe_webhook', methods=['POST'])
-async def stripe_webhook():
-    payload = await request.get_data(as_text=True)
-    sig_header = request.headers.get("Stripe-Signature")
-
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-        if event["type"] == "checkout.session.completed":
-            user_id = int(event["data"]["object"]["metadata"]["user_id"])
-            invite_link = await generate_invite_link()
-            if invite_link:
-                await application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
-            else:
-                await application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
-    except stripe.error.SignatureVerificationError:
-        logger.error("Stripe webhook signature verification failed.")
-        return "Unauthorized", 400
-    
-    return "", 200
 
 # --- Route: Telegram Webhook ---
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
+    """Handles incoming Telegram updates via webhook."""
     update = Update.de_json(await request.get_json(), application.bot)
     await application.process_update(update)
     return "", 200
 
-# --- Function: Start Command ---
-async def start(update: Update, context: CallbackContext):
+# --- Function: Start Telegram Bot ---
+async def start(update: Update, context):
     logger.info(f"Received /start command from {update.effective_user.username}")
     await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
 
 # --- Function: Subscription Command ---
-async def subscribe(update: Update, context: CallbackContext):
-    await update.message.reply_text("Subscription process will be implemented.")
+async def subscribe(update: Update, context):
+    user = update.message.from_user
+    
+    toyibpay_link = f"https://toyyibpay.com/sample-link/{user.id}"
+    stripe_link = "https://checkout.stripe.com/pay/sample-link"
+    
+    message = "Choose your payment method:\n\n"
+    message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
+    message += f"2. [Pay with Stripe]({stripe_link})\n"
+    
+    await update.message.reply_text(message, parse_mode="Markdown")
 
-# Add command handlers
+# Start Telegram bot
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# --- Main Function ---
-async def main():
-    # Start the Telegram bot
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
-    # Start Quart server
+# Run services separately
+if __name__ == "__main__":
+    import hypercorn.asyncio
+    import hypercorn.config
+    
     config = hypercorn.config.Config()
     config.bind = ["0.0.0.0:10000"]
-    await hypercorn.asyncio.serve(app, config)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(application.initialize())
+    loop.create_task(application.start())
+    loop.run_until_complete(hypercorn.asyncio.serve(app, config))
