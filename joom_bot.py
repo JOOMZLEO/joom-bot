@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
+load_dotenv()
 
 # Required environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -60,7 +60,6 @@ async def success_callback():
     data = await request.form
     logger.info(f"Received success callback: {data}")
 
-    # Validate payment with userSecretKey
     if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
         order_id = data["billExternalReferenceNo"]
         if order_id.startswith("user_"):
