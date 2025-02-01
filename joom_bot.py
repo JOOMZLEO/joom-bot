@@ -19,7 +19,6 @@ TOYYIBPAY_API_KEY = os.getenv("TOYYIBPAY_API_KEY")
 TOYYIBPAY_CATEGORY_CODE = os.getenv("TOYYIBPAY_CATEGORY_CODE")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
 GROUP_ID = os.getenv("GROUP_ID")
-TOYYIBPAY_BASE_URL = "https://toyyibpay.com"
 SUCCESS_URL = os.getenv("SUCCESS_URL")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -59,6 +58,7 @@ async def generate_invite_link():
 async def telegram_webhook():
     """Handles incoming Telegram updates via webhook."""
     data = await request.get_json()
+    logger.info(f"Received Telegram webhook data: {data}")
     update = Update.de_json(data, bot)
     await application.process_update(update)
     return "", 200
