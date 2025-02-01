@@ -25,20 +25,9 @@ CALLBACK_URL = os.getenv("CALLBACK_URL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
 # Validate all environment variables
-required_env_vars = {
-    "BOT_TOKEN": BOT_TOKEN,
-    "TOYYIBPAY_API_KEY": TOYYIBPAY_API_KEY,
-    "TOYYIBPAY_CATEGORY_CODE": TOYYIBPAY_CATEGORY_CODE,
-    "STRIPE_API_KEY": STRIPE_API_KEY,
-    "GROUP_ID": GROUP_ID,
-    "SUCCESS_URL": SUCCESS_URL,
-    "CALLBACK_URL": CALLBACK_URL,
-    "STRIPE_WEBHOOK_SECRET": STRIPE_WEBHOOK_SECRET,
-}
-
-missing_vars = [key for key, value in required_env_vars.items() if not value]
-if missing_vars:
-    raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
+required_env_vars = [BOT_TOKEN, TOYYIBPAY_API_KEY, TOYYIBPAY_CATEGORY_CODE, STRIPE_API_KEY, GROUP_ID, SUCCESS_URL, CALLBACK_URL, STRIPE_WEBHOOK_SECRET]
+if not all(required_env_vars):
+    raise EnvironmentError("Missing one or more required environment variables.")
 
 # Initialize Stripe
 stripe.api_key = STRIPE_API_KEY
@@ -68,40 +57,35 @@ async def generate_invite_link():
 @app.route('/success', methods=['POST'])
 async def success_callback():
     """Handles ToyyibPay success callbacks securely."""
-    try:
-        data = await request.form
-        data = data.to_dict()
-        logger.info(f"Received success callback: {data}")
+    data = await request.form
+    data = data.to_dict()
+    logger.info(f"Received success callback: {data}")
 
-        if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
-            order_id = data["billExternalReferenceNo"]
-            if order_id.startswith("user_"):
-                try:
-                    user_id = int(order_id.split('_')[1])
-                    invite_link = await generate_invite_link()
-                    if invite_link:
-                        await application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
-                    else:
-                        await application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
-                except (IndexError, ValueError) as e:
-                    logger.error(f"Invalid order_id format: {order_id} - {e}")
-            else:
-                logger.error(f"Invalid order_id: {order_id}")
+    if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
+        order_id = data["billExternalReferenceNo"]
+        if order_id.startswith("user_"):
+            try:
+                user_id = int(order_id.split('_')[1])
+                invite_link = await generate_invite_link()
+                if invite_link:
+                    await application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
+                else:
+                    await application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
+            except (IndexError, ValueError) as e:
+                logger.error(f"Invalid order_id format: {order_id} - {e}")
         else:
-            logger.error("Failed payment validation.")
-            abort(400)
-
-        return "Success callback received", 200
-    except Exception as e:
-        logger.error(f"Error in success_callback: {e}")
-        abort(500)
+            logger.error(f"Invalid order_id: {order_id}")
+    else:
+        logger.error("Failed payment validation.")
+        abort(400)
+    
+    return "Success callback received", 200
 
 # --- Route: Telegram Webhook ---
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
     """Handles incoming Telegram updates via webhook."""
-    json_data = await request.get_json()
-    update = Update.de_json(json_data, application.bot)
+    update = Update.de_json(await request.get_json(), application.bot)
     await application.process_update(update)
     return "", 200
 
@@ -113,28 +97,29 @@ async def start(update: Update, context):
 # --- Function: Subscription Command ---
 async def subscribe(update: Update, context):
     user = update.message.from_user
-
+    
     toyibpay_link = f"https://toyyibpay.com/sample-link/{user.id}"
     stripe_link = "https://checkout.stripe.com/pay/sample-link"
-
+    
     message = "Choose your payment method:\n\n"
     message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
     message += f"2. [Pay with Stripe]({stripe_link})\n"
-
+    
     await update.message.reply_text(message, parse_mode="Markdown")
 
-# Add command handlers
+# Start Telegram bot
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# Run services
-async def main():
-    await application.initialize()
-    await application.start()
-
+# Run services separately
+if __name__ == "__main__":
+    import hypercorn.asyncio
+    import hypercorn.config
+    
     config = hypercorn.config.Config()
     config.bind = ["0.0.0.0:10000"]
-    await hypercorn.asyncio.serve(app, config)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(application.initialize())
+    loop.create_task(application.start())
+    loop.run_until_complete(hypercorn.asyncio.serve(app, config))
