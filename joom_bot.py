@@ -5,14 +5,13 @@ import stripe
 import requests
 import hmac
 import hashlib
-import asyncio
 from quart import Quart, request, abort
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv(dotenv_path="C:/Users/Ibrahim/Desktop/JOOM/Environment/Development/.env")
+load_dotenv()
 
 # Required environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -20,6 +19,7 @@ TOYYIBPAY_API_KEY = os.getenv("TOYYIBPAY_API_KEY")
 TOYYIBPAY_CATEGORY_CODE = os.getenv("TOYYIBPAY_CATEGORY_CODE")
 STRIPE_API_KEY = os.getenv("STRIPE_API_KEY")
 GROUP_ID = os.getenv("GROUP_ID")
+TOYYIBPAY_BASE_URL = "https://toyyibpay.com"
 SUCCESS_URL = os.getenv("SUCCESS_URL")
 CALLBACK_URL = os.getenv("CALLBACK_URL")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -40,25 +40,34 @@ logger = logging.getLogger(__name__)
 app = Quart(__name__)
 
 # Telegram bot application
+bot = Bot(token=BOT_TOKEN)
 application = Application.builder().token(BOT_TOKEN).build()
 
 # --- Function: Generate Invite Link ---
 async def generate_invite_link():
     """Generate a Telegram invite link for the group."""
     try:
-        invite_link = await application.bot.create_chat_invite_link(chat_id=GROUP_ID)
+        invite_link = await bot.create_chat_invite_link(chat_id=GROUP_ID)
         logger.info(f"Generated invite link: {invite_link.invite_link}")
         return invite_link.invite_link
     except Exception as e:
         logger.error(f"Failed to generate invite link: {e}")
         return None
 
+# --- Route: Telegram Webhook ---
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
+    """Handles incoming Telegram updates via webhook."""
+    data = await request.get_json()
+    update = Update.de_json(data, bot)
+    await application.process_update(update)
+    return "", 200
+
 # --- Route: ToyyibPay Success Callback ---
 @app.route('/success', methods=['POST'])
 async def success_callback():
     """Handles ToyyibPay success callbacks securely."""
     data = await request.form
-    data = data.to_dict()
     logger.info(f"Received success callback: {data}")
 
     if data.get("status_id") == "1" and data.get("billExternalReferenceNo"):
@@ -68,9 +77,9 @@ async def success_callback():
                 user_id = int(order_id.split('_')[1])
                 invite_link = await generate_invite_link()
                 if invite_link:
-                    await application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
+                    await bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
                 else:
-                    await application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
+                    await bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
             except (IndexError, ValueError) as e:
                 logger.error(f"Invalid order_id format: {order_id} - {e}")
         else:
@@ -81,12 +90,26 @@ async def success_callback():
     
     return "Success callback received", 200
 
-# --- Route: Telegram Webhook ---
-@app.route('/webhook', methods=['POST'])
-async def telegram_webhook():
-    """Handles incoming Telegram updates via webhook."""
-    update = Update.de_json(await request.get_json(), application.bot)
-    await application.process_update(update)
+# --- Route: Stripe Webhook ---
+@app.route('/stripe_webhook', methods=['POST'])
+async def stripe_webhook():
+    """Handles Stripe webhook securely with signature verification."""
+    payload = await request.get_data()
+    sig_header = request.headers.get("Stripe-Signature")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        if event["type"] == "checkout.session.completed":
+            user_id = int(event["data"]["object"]["metadata"]["user_id"])
+            invite_link = await generate_invite_link()
+            if invite_link:
+                await bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
+            else:
+                await bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
+    except stripe.error.SignatureVerificationError:
+        logger.error("Stripe webhook signature verification failed.")
+        abort(400)
+    
     return "", 200
 
 # --- Function: Start Telegram Bot ---
@@ -96,30 +119,20 @@ async def start(update: Update, context):
 
 # --- Function: Subscription Command ---
 async def subscribe(update: Update, context):
-    user = update.message.from_user
-    
-    toyibpay_link = f"https://toyyibpay.com/sample-link/{user.id}"
-    stripe_link = "https://checkout.stripe.com/pay/sample-link"
-    
-    message = "Choose your payment method:\n\n"
-    message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
-    message += f"2. [Pay with Stripe]({stripe_link})\n"
-    
-    await update.message.reply_text(message, parse_mode="Markdown")
+    await update.message.reply_text("Subscription process will be implemented.")
 
-# Start Telegram bot
+# Add Handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("subscribe", subscribe))
 
-# Run services separately
+# Run Quart app with Hypercorn
 if __name__ == "__main__":
-    import hypercorn.asyncio
-    import hypercorn.config
+    import asyncio
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
     
-    config = hypercorn.config.Config()
+    config = Config()
     config.bind = ["0.0.0.0:10000"]
     
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(application.initialize())
-    loop.create_task(application.start())
-    loop.run_until_complete(hypercorn.asyncio.serve(app, config))
+    loop.run_until_complete(serve(app, config))
