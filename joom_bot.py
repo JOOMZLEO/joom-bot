@@ -42,6 +42,19 @@ app = Quart(__name__)
 # Telegram bot application
 application = ApplicationBuilder().token(BOT_TOKEN).build()
 
+# --- Route: Telegram Webhook ---
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
+    """Handles incoming Telegram updates via webhook."""
+    data = await request.get_json()
+    logger.info(f"Received Telegram webhook data: {data}")
+    
+    # Process the update
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    
+    return "", 200
+
 # --- Function: Generate Invite Link ---
 async def generate_invite_link():
     """Generate a Telegram invite link for the group."""
