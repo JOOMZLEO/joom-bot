@@ -203,5 +203,6 @@ if __name__ == "__main__":
     config = Config()
     config.bind = ["0.0.0.0:10000"]
     
+    logger.info("Starting Quart app on port 10000...")
     loop = asyncio.get_event_loop()
     loop.run_until_complete(serve(app, config))
