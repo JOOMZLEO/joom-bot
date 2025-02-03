@@ -46,14 +46,22 @@ application = ApplicationBuilder().token(BOT_TOKEN).build()
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
     """Handles incoming Telegram updates via webhook."""
-    data = await request.get_json()
-    logger.info(f"Received Telegram webhook data: {data}")
-    
-    # Process the update
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
-    
-    return "", 200
+    try:
+        data = await request.get_json()
+        logger.info(f"Received Telegram webhook data: {data}")
+        
+        if not data:
+            logger.error("No data received in webhook.")
+            return "No data received", 400
+        
+        # Process the update
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+        
+        return "", 200
+    except Exception as e:
+        logger.error(f"Error in webhook: {e}")
+        return "Internal Server Error", 500
 
 # --- Function: Generate Invite Link ---
 async def generate_invite_link():
