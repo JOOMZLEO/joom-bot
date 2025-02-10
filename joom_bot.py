@@ -5,10 +5,13 @@ import stripe
 import requests
 import hmac
 import hashlib
+import asyncio
 from quart import Quart, request, abort
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler
 from dotenv import load_dotenv
+from hypercorn.asyncio import serve
+from hypercorn.config import Config
 
 # Load environment variables
 load_dotenv()
@@ -54,9 +57,8 @@ async def telegram_webhook():
             logger.error("No data received in webhook.")
             return "No data received", 400
         
-        # Process the update
-        update = Update.de_json(data, application.bot)
-        await application.process_update(update)
+        # Process in background
+        asyncio.create_task(application.process_update(Update.de_json(data, application.bot)))
         
         return "", 200
     except Exception as e:
@@ -110,107 +112,25 @@ async def stripe_webhook():
 
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-        if event["type"] == "checkout.session.completed":
-            user_id = int(event["data"]["object"]["metadata"]["user_id"])
-            invite_link = await generate_invite_link()
-            if invite_link:
-                await application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
-            else:
-                await application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
-    except stripe.error.SignatureVerificationError:
-        logger.error("Stripe webhook signature verification failed.")
+    except (stripe.error.SignatureVerificationError, ValueError) as e:
+        logger.error(f"Stripe webhook verification failed: {e}")
         abort(400)
+    
+    if event["type"] == "checkout.session.completed":
+        user_id = int(event["data"]["object"]["metadata"]["user_id"])
+        invite_link = await generate_invite_link()
+        if invite_link:
+            await application.bot.send_message(chat_id=user_id, text=f"✅ Payment successful! Join the group: {invite_link}")
+        else:
+            await application.bot.send_message(chat_id=user_id, text="⚠ Payment successful, but we couldn't generate an invite link. Contact support.")
     
     return "", 200
 
-# --- Route: ToyyibPay Callback ---
-@app.route('/callback', methods=['POST'])
-async def payment_callback():
-    """Handles ToyyibPay payment callback securely."""
-    data = await request.form
-    logger.info(f"Received payment callback: {data}")
-    
-    if not hmac.compare_digest(data.get("userSecretKey", ""), TOYYIBPAY_API_KEY):
-        logger.error("Unauthorized callback request.")
-        abort(403)
-    
-    return "Payment callback received", 200
-
-# --- Function: Start Telegram Bot ---
-async def start(update: Update, context):
-    logger.info(f"Received /start command from {update.effective_user.username}")
-    await update.message.reply_text("Welcome! Use /subscribe to start your subscription.")
-
-# --- Function: Subscription Command ---
-async def subscribe(update: Update, context):
-    user = update.message.from_user
-
-    # Step 1: Generate ToyyibPay Payment Link
-    toyibpay_link = None
-    payment_details = {
-        "userSecretKey": TOYYIBPAY_API_KEY,
-        "categoryCode": TOYYIBPAY_CATEGORY_CODE,
-        "billName": "Group Subscription",
-        "billDescription": "Subscription for Telegram Group Access",
-        "billPriceSetting": 1,
-        "billPayorInfo": 1,
-        "billAmount": "200",
-        "billReturnUrl": SUCCESS_URL,
-        "billCallbackUrl": CALLBACK_URL,
-        "billExternalReferenceNo": f"user_{user.id}_{datetime.datetime.now().timestamp()}",
-        "billTo": user.username or "Anonymous",
-        "billEmail": "example@example.com",
-        "billPhone": "0123456789",
-    }
-
-    response = requests.post(f"{TOYYIBPAY_BASE_URL}/index.php/api/createBill", data=payment_details)
-    if response.status_code == 200:
-        try:
-            payment_data = response.json()
-            bill_code = payment_data[0]["BillCode"]
-            toyibpay_link = f"{TOYYIBPAY_BASE_URL}/{bill_code}"
-        except Exception as e:
-            logger.error(f"Error parsing ToyyibPay response: {e}")
-
-    # Step 2: Generate Stripe Payment Link
-    stripe_link = None
-    try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=[{"price_data": {"currency": "myr", "product_data": {"name": "Group Subscription"}, "unit_amount": 200}, "quantity": 1}],
-            mode="payment",
-            success_url=SUCCESS_URL,
-            cancel_url=CALLBACK_URL,
-            metadata={"user_id": user.id},
-        )
-        stripe_link = session.url
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error: {e}")
-
-    # Send Payment Links
-    if toyibpay_link or stripe_link:
-        message = "Choose your payment method:\n\n"
-        if toyibpay_link:
-            message += f"1. [Pay with ToyyibPay]({toyibpay_link})\n"
-        if stripe_link:
-            message += f"2. [Pay with Stripe]({stripe_link})\n"
-        await update.message.reply_text(message, parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Payment link generation failed. Please try again later.")
-
-# Add Handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("subscribe", subscribe))
-
-# Run Quart app with Hypercorn
+# --- Run Quart app with Hypercorn ---
 if __name__ == "__main__":
-    import asyncio
-    from hypercorn.asyncio import serve
-    from hypercorn.config import Config
-    
     config = Config()
-    config.bind = ["0.0.0.0:8080"]
+    config.bind = [f"0.0.0.0:{os.getenv('PORT', '8080')}"]
     
-    logger.info("Starting Quart app on port 8080...")
+    logger.info("Starting Quart app on assigned port...")
     loop = asyncio.get_event_loop()
     loop.run_until_complete(serve(app, config))
